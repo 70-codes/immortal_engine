@@ -1,0 +1,34 @@
+[package]
+name = "imortal_ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Visual editor UI for Immortal Engine"
+
+[dependencies]
+# Internal crates
+imortal_core = { path = "../core" }
+imortal_ir = { path = "../ir" }
+imortal_components = { path = "../components" }
+imortal_codegen = { path = "../codegen" }
+
+# UI framework
+eframe.workspace = true
+egui.workspace = true
+egui_extras.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Utilities
+uuid.workspace = true
+tracing.workspace = true
+
+# File dialogs (disable xdg-portal to avoid ashpd compatibility issues)
+rfd = { version = "0.15", default-features = false, features = ["gtk3"] }
+
+[features]
+default = []
+persistence = ["eframe/persistence"]

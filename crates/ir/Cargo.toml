@@ -1,0 +1,19 @@
+[package]
+name = "imortal_ir"
+description = "Intermediate Representation for Immortal Engine - Graph-based project representation"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+
+imortal_core = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

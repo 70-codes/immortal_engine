@@ -1,0 +1,18 @@
+[package]
+name = "imortal_components"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Component system for Immortal Engine - definitions, registry, and traits"
+
+[dependencies]
+# Workspace dependencies
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+
+# Internal crates
+imortal_core.workspace = true
+imortal_ir.workspace = true
