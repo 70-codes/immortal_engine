@@ -103,11 +103,13 @@ pub fn database_component() -> ComponentDefinition {
         .with_config(
             ConfigOption::string("database", "Database Name")
                 .with_description("Name of the database to connect to")
+                .with_default("")
                 .in_group("Connection"),
         )
         .with_config(
             ConfigOption::string("username", "Username")
                 .with_description("Database username")
+                .with_default("")
                 .in_group("Connection"),
         )
         .with_config(

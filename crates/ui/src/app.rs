@@ -69,6 +69,9 @@ pub struct ImmortalApp {
 
     /// Undo/Redo history
     history: History,
+
+    /// Database connection test result (node_id, success, message, timestamp)
+    db_connection_result: Option<(NodeId, bool, String, std::time::Instant)>,
 }
 
 impl ImmortalApp {
@@ -93,6 +96,7 @@ impl ImmortalApp {
             connection_from_port: String::new(),
             connection_mouse_pos: egui::Pos2::ZERO,
             history: History::new(),
+            db_connection_result: None,
         }
     }
 
@@ -117,6 +121,7 @@ impl ImmortalApp {
             connection_from_port: String::new(),
             connection_mouse_pos: egui::Pos2::ZERO,
             history: History::new(),
+            db_connection_result: None,
         }
     }
 
@@ -144,6 +149,7 @@ impl ImmortalApp {
             connection_from_port: String::new(),
             connection_mouse_pos: egui::Pos2::ZERO,
             history: History::new(),
+            db_connection_result: None,
         }
     }
 
@@ -679,6 +685,21 @@ impl ImmortalApp {
             }
         });
 
+        // Ensure database components have all required config fields
+        if node.component_type == "storage.database" {
+            let required_fields = [
+                ("database", imortal_core::ConfigValue::String(String::new())),
+                ("username", imortal_core::ConfigValue::String(String::new())),
+            ];
+            for (field, default_value) in required_fields {
+                if !node.config.contains_key(field) {
+                    if let Some(n) = self.project.get_node_mut(node_id) {
+                        n.config.insert(field.to_string(), default_value);
+                    }
+                }
+            }
+        }
+
         // Configuration section - editable
         if !node.config.is_empty() {
             egui::CollapsingHeader::new("Configuration")
@@ -795,7 +816,156 @@ impl ImmortalApp {
                             }
                         }
                     }
+
+                    // Test Connection button for database components
+                    if node.component_type == "storage.database" {
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        ui.horizontal(|ui| {
+                            if ui.button("🔌 Test Connection").clicked() {
+                                let result = Self::test_database_connection(&node.config);
+                                match result {
+                                    Ok(msg) => {
+                                        self.db_connection_result = Some((node_id, true, msg, std::time::Instant::now()));
+                                    }
+                                    Err(err) => {
+                                        self.db_connection_result = Some((node_id, false, err, std::time::Instant::now()));
+                                    }
+                                }
+                            }
+                        });
+
+                        // Display connection result with colors (auto-hide after 5 seconds)
+                        let mut should_clear_result = false;
+                        if let Some((result_node_id, success, message, timestamp)) = &self.db_connection_result {
+                            if *result_node_id == node_id {
+                                // Check if 5 seconds have passed
+                                if timestamp.elapsed().as_secs() >= 5 {
+                                    should_clear_result = true;
+                                } else {
+                                ui.add_space(8.0);
+
+                                let (bg_color, text_color, icon) = if *success {
+                                    (
+                                        egui::Color32::from_rgb(30, 70, 30),
+                                        egui::Color32::from_rgb(100, 255, 100),
+                                        "✅"
+                                    )
+                                } else {
+                                    (
+                                        egui::Color32::from_rgb(70, 30, 30),
+                                        egui::Color32::from_rgb(255, 100, 100),
+                                        "❌"
+                                    )
+                                };
+
+                                egui::Frame::none()
+                                    .fill(bg_color)
+                                    .inner_margin(egui::Margin::same(8.0))
+                                    .rounding(egui::Rounding::same(4.0))
+                                    .show(ui, |ui| {
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.label(egui::RichText::new(icon).size(16.0));
+                                            ui.add_space(4.0);
+                                            ui.label(
+                                                egui::RichText::new(if *success { "Connected!" } else { "Connection Failed" })
+                                                    .color(text_color)
+                                                    .strong()
+                                            );
+                                        });
+                                        ui.add_space(4.0);
+                                        ui.label(
+                                            egui::RichText::new(message)
+                                                .color(if *success {
+                                                    egui::Color32::from_rgb(180, 255, 180)
+                                                } else {
+                                                    egui::Color32::from_rgb(255, 180, 180)
+                                                })
+                                                .size(12.0)
+                                        );
+                                    });
+
+                                    // Request repaint to update the timer
+                                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+                                }
+                            }
+                        }
+
+                        // Clear the result after timeout
+                        if should_clear_result {
+                            self.db_connection_result = None;
+                        }
+                    }
                 });
+        }
+    }
+
+    /// Test database connection using the provided config
+    fn test_database_connection(config: &std::collections::HashMap<String, imortal_core::ConfigValue>) -> Result<String, String> {
+        // Extract connection parameters
+        let backend = config.get("backend")
+            .and_then(|v| if let imortal_core::ConfigValue::String(s) = v { Some(s.as_str()) } else { None })
+            .unwrap_or("postgres");
+
+        let host = config.get("host")
+            .and_then(|v| if let imortal_core::ConfigValue::String(s) = v { Some(s.clone()) } else { None })
+            .unwrap_or_else(|| "localhost".to_string());
+
+        let port = config.get("port")
+            .and_then(|v| if let imortal_core::ConfigValue::Int(i) = v { Some(*i as u16) } else { None })
+            .unwrap_or(5432);
+
+        let database = config.get("database")
+            .and_then(|v| if let imortal_core::ConfigValue::String(s) = v { Some(s.clone()) } else { None })
+            .unwrap_or_default();
+
+        let username = config.get("username")
+            .and_then(|v| if let imortal_core::ConfigValue::String(s) = v { Some(s.clone()) } else { None })
+            .unwrap_or_default();
+
+        let password = config.get("password")
+            .and_then(|v| if let imortal_core::ConfigValue::String(s) = v { Some(s.clone()) } else { None })
+            .unwrap_or_default();
+
+        // Validate required fields
+        if database.is_empty() {
+            return Err("Database name is required".to_string());
+        }
+        if username.is_empty() {
+            return Err("Username is required".to_string());
+        }
+
+        match backend {
+            "postgres" => {
+                // Build connection string
+                let conn_string = format!(
+                    "host={} port={} dbname={} user={} password={}",
+                    host, port, database, username, password
+                );
+
+                // Try to connect
+                match postgres::Client::connect(&conn_string, postgres::NoTls) {
+                    Ok(mut client) => {
+                        // Try a simple query to verify connection
+                        match client.query_one("SELECT version()", &[]) {
+                            Ok(row) => {
+                                let version: String = row.get(0);
+                                // Extract just the first part of the version string
+                                let short_version = version.split(',').next().unwrap_or(&version);
+                                Ok(format!("Connected to {}", short_version))
+                            }
+                            Err(e) => Err(format!("Query failed: {}", e))
+                        }
+                    }
+                    Err(e) => Err(format!("{}", e))
+                }
+            }
+            "mysql" => Err("MySQL connection test not yet implemented".to_string()),
+            "sqlite" => Err("SQLite connection test not yet implemented".to_string()),
+            "mongodb" => Err("MongoDB connection test not yet implemented".to_string()),
+            _ => Err(format!("Unsupported backend: {}", backend))
         }
     }
 
@@ -860,7 +1030,7 @@ impl ImmortalApp {
     fn get_node_content_items(node: &Node) -> usize {
         match node.component_type.as_str() {
             "data.entity" => node.fields.len(),
-            "storage.database" => 4,  // backend, host:port, database, ssl
+            "storage.database" => 5,  // backend, host:port, database, username, ssl
             "api.rest" => 3,          // method, path, auth
             _ => 0,
         }
@@ -1413,8 +1583,28 @@ impl ImmortalApp {
                 value_color
             );
 
-            // Row 4: SSL status
+            // Row 4: Username
+            let username = node.config.get("username")
+                .and_then(|v| if let imortal_core::ConfigValue::String(s) = v { Some(s.clone()) } else { None })
+                .unwrap_or_else(|| "—".to_string());
             let row_y = field_start_y + (field_height * 3.0);
+            painter.text(
+                egui::pos2(node_rect.min.x + (8.0 * zoom), row_y),
+                egui::Align2::LEFT_TOP,
+                "User:",
+                egui::FontId::proportional(11.0 * zoom),
+                label_color
+            );
+            painter.text(
+                egui::pos2(node_rect.max.x - (8.0 * zoom), row_y),
+                egui::Align2::RIGHT_TOP,
+                &username,
+                egui::FontId::proportional(11.0 * zoom),
+                value_color
+            );
+
+            // Row 5: SSL status
+            let row_y = field_start_y + (field_height * 4.0);
             let ssl_icon = if ssl { "🔒" } else { "🔓" };
             let ssl_text = if ssl { "SSL Enabled" } else { "SSL Disabled" };
             let ssl_color = if ssl { egui::Color32::from_rgb(100, 200, 100) } else { egui::Color32::from_rgb(200, 150, 100) };

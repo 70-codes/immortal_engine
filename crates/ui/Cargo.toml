@@ -32,6 +32,9 @@ rfd = { version = "0.15", default-features = false, features = ["gtk3"] }
 # Directory paths
 dirs = "5.0"
 
+# Database connection testing
+postgres = "0.19"
+
 [features]
 default = []
 persistence = ["eframe/persistence"]
