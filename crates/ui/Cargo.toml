@@ -29,6 +29,9 @@ tracing.workspace = true
 # File dialogs (disable xdg-portal to avoid ashpd compatibility issues)
 rfd = { version = "0.15", default-features = false, features = ["gtk3"] }
 
+# Directory paths
+dirs = "5.0"
+
 [features]
 default = []
 persistence = ["eframe/persistence"]

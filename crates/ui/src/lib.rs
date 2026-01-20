@@ -34,8 +34,10 @@ pub mod toolbar;
 pub mod dialogs;
 pub mod theme;
 pub mod state;
+pub mod welcome;
 
-pub use app::ImmortalApp;
+pub use app::{ImmortalApp, AppMode};
+pub use welcome::{WelcomeScreen, WelcomeAction, NewProjectInfo, RecentProject};
 
 use eframe::egui;
 use imortal_ir::ProjectGraph;
@@ -77,6 +79,26 @@ pub fn run_with_project(project: ProjectGraph) -> eframe::Result<()> {
         Box::new(move |cc| {
             setup_fonts(&cc.egui_ctx);
             Ok(Box::new(ImmortalApp::with_project(cc, project)))
+        }),
+    )
+}
+
+/// Run with a project loaded from a file path
+pub fn run_with_project_path(project: ProjectGraph, path: std::path::PathBuf) -> eframe::Result<()> {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1400.0, 900.0])
+            .with_min_inner_size([800.0, 600.0])
+            .with_title(format!("Immortal Engine - {}", project.meta.name)),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "Immortal Engine",
+        options,
+        Box::new(move |cc| {
+            setup_fonts(&cc.egui_ctx);
+            Ok(Box::new(ImmortalApp::with_project_path(cc, project, path)))
         }),
     )
 }
@@ -138,9 +160,10 @@ impl Default for UiConfig {
 
 /// Prelude for convenient imports
 pub mod prelude {
-    pub use super::{ImmortalApp, UiConfig, run, run_with_project};
+    pub use super::{ImmortalApp, AppMode, UiConfig, run, run_with_project, run_with_project_path};
     pub use super::state::EditorState;
     pub use super::canvas::CanvasWidget;
     pub use super::palette::PaletteWidget;
     pub use super::properties::PropertiesPanel;
+    pub use super::welcome::{WelcomeScreen, WelcomeAction, NewProjectInfo, RecentProject};
 }

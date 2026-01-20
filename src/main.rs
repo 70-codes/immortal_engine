@@ -5,6 +5,7 @@
 //! dragging components and drawing connections between them.
 
 use std::env;
+use std::path::PathBuf;
 
 fn main() {
     // Initialize tracing for logging
@@ -33,7 +34,8 @@ fn main() {
                     project.node_count()
                 );
 
-                if let Err(e) = imortal_ui::run_with_project(project) {
+                let path = PathBuf::from(project_path);
+                if let Err(e) = imortal_ui::run_with_project_path(project, path) {
                     tracing::error!("Failed to run UI: {}", e);
                     eprintln!("Error: {}", e);
                     std::process::exit(1);

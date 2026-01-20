@@ -7,12 +7,29 @@ use eframe::egui;
 use imortal_ir::{ProjectGraph, ProjectMeta, Node, Edge, Field};
 use imortal_core::{DataType, NodeId};
 use imortal_components::ComponentRegistry;
+use std::path::PathBuf;
 
 use crate::state::{EditorState, History};
+use crate::welcome::{WelcomeScreen, WelcomeAction, NewProjectInfo};
 use crate::UiConfig;
+
+/// Application mode - either showing welcome screen or the editor
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppMode {
+    /// Showing the welcome/start screen
+    Welcome,
+    /// Showing the main editor
+    Editor,
+}
 
 /// The main Immortal Engine application
 pub struct ImmortalApp {
+    /// Current application mode
+    pub mode: AppMode,
+
+    /// Welcome screen state
+    pub welcome_screen: WelcomeScreen,
+
     /// The project graph being edited
     pub project: ProjectGraph,
 
@@ -48,16 +65,18 @@ pub struct ImmortalApp {
     status_message: Option<(String, std::time::Instant)>,
 
     /// Current project file path
-    project_path: Option<String>,
+    project_path: Option<PathBuf>,
 
     /// Undo/Redo history
     history: History,
 }
 
 impl ImmortalApp {
-    /// Create a new application with default empty project
+    /// Create a new application - starts with welcome screen
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         Self {
+            mode: AppMode::Welcome,
+            welcome_screen: WelcomeScreen::new(),
             project: ProjectGraph::new(ProjectMeta::new("Untitled")),
             state: EditorState::new(),
             registry: ComponentRegistry::with_builtins(),
@@ -77,9 +96,11 @@ impl ImmortalApp {
         }
     }
 
-    /// Create a new application with an existing project
+    /// Create a new application with an existing project (skips welcome screen)
     pub fn with_project(_cc: &eframe::CreationContext<'_>, project: ProjectGraph) -> Self {
         Self {
+            mode: AppMode::Editor,
+            welcome_screen: WelcomeScreen::new(),
             project,
             state: EditorState::new(),
             registry: ComponentRegistry::with_builtins(),
@@ -97,6 +118,121 @@ impl ImmortalApp {
             connection_mouse_pos: egui::Pos2::ZERO,
             history: History::new(),
         }
+    }
+
+    /// Create a new application with a project loaded from a path
+    pub fn with_project_path(_cc: &eframe::CreationContext<'_>, project: ProjectGraph, path: PathBuf) -> Self {
+        let mut welcome_screen = WelcomeScreen::new();
+        welcome_screen.add_recent_project(project.meta.name.clone(), path.clone());
+
+        Self {
+            mode: AppMode::Editor,
+            welcome_screen,
+            project,
+            state: EditorState::new(),
+            registry: ComponentRegistry::with_builtins(),
+            config: UiConfig::default(),
+            show_about: false,
+            show_settings: false,
+            show_new_project: false,
+            status_message: None,
+            project_path: Some(path),
+            new_field_name: String::new(),
+            new_field_type: 0,
+            drawing_connection: false,
+            connection_from_node: None,
+            connection_from_port: String::new(),
+            connection_mouse_pos: egui::Pos2::ZERO,
+            history: History::new(),
+        }
+    }
+
+    /// Handle welcome screen actions
+    fn handle_welcome_action(&mut self, action: WelcomeAction) {
+        match action {
+            WelcomeAction::None => {}
+            WelcomeAction::CreateProject(info) => {
+                self.create_new_project(info);
+            }
+            WelcomeAction::OpenProject(path) => {
+                self.load_project_from_path(path);
+            }
+            WelcomeAction::OpenRecentProject(path) => {
+                self.load_project_from_path(path);
+            }
+        }
+    }
+
+    /// Create a new project with the given info
+    fn create_new_project(&mut self, info: NewProjectInfo) {
+        // Create the project directory
+        let project_dir = info.location.join(sanitize_project_name(&info.name));
+
+        if let Err(e) = std::fs::create_dir_all(&project_dir) {
+            self.set_status(format!("Failed to create project directory: {}", e));
+            return;
+        }
+
+        // Create project metadata
+        let mut meta = ProjectMeta::new(&info.name);
+        if !info.description.is_empty() {
+            meta = meta.with_description(&info.description);
+        }
+
+        // Create the project graph
+        let project = ProjectGraph::new(meta);
+
+        // Save the project file
+        let project_file = project_dir.join(format!("{}.imortal", sanitize_project_name(&info.name)));
+
+        match imortal_ir::save_project(&project, &project_file, imortal_ir::ProjectFormat::Json) {
+            Ok(_) => {
+                // Add to recent projects
+                self.welcome_screen.add_recent_project(info.name.clone(), project_file.clone());
+
+                // Switch to editor mode
+                self.project = project;
+                self.project_path = Some(project_file);
+                self.state = EditorState::new();
+                self.history = History::new();
+                self.mode = AppMode::Editor;
+                self.welcome_screen.close();
+
+                self.set_status(format!("Created project: {}", info.name));
+            }
+            Err(e) => {
+                self.set_status(format!("Failed to save project: {}", e));
+            }
+        }
+    }
+
+    /// Load a project from a file path
+    fn load_project_from_path(&mut self, path: PathBuf) {
+        match imortal_ir::load_project(&path) {
+            Ok(project) => {
+                // Add to recent projects
+                self.welcome_screen.add_recent_project(project.meta.name.clone(), path.clone());
+
+                // Switch to editor mode
+                self.project = project;
+                self.project_path = Some(path);
+                self.state = EditorState::new();
+                self.history = History::new();
+                self.mode = AppMode::Editor;
+                self.welcome_screen.close();
+
+                self.set_status(format!("Opened project: {}", self.project.meta.name));
+            }
+            Err(e) => {
+                self.set_status(format!("Failed to load project: {}", e));
+            }
+        }
+    }
+
+    /// Show the welcome screen (from menu: File -> Close Project)
+    pub fn show_welcome_screen(&mut self) {
+        self.mode = AppMode::Welcome;
+        self.welcome_screen.open();
     }
 
     /// Save current state for undo
@@ -144,14 +280,36 @@ impl ImmortalApp {
             egui::menu::bar(ui, |ui| {
                 // File menu
                 ui.menu_button("File", |ui| {
-                    if ui.button("New Project").clicked() {
-                        self.show_new_project = true;
+                    if ui.button("New Project...").clicked() {
+                        // Go to welcome screen in new project mode
+                        self.mode = AppMode::Welcome;
+                        self.welcome_screen.open();
                         ui.close_menu();
                     }
                     if ui.button("Open...").clicked() {
                         self.open_project();
                         ui.close_menu();
                     }
+
+                    // Recent projects submenu
+                    let recent_projects = self.welcome_screen.recent_projects.clone();
+                    if !recent_projects.is_empty() {
+                        ui.menu_button("Open Recent", |ui| {
+                            for project in &recent_projects {
+                                if ui.button(&project.name).clicked() {
+                                    self.load_project_from_path(project.path.clone());
+                                    ui.close_menu();
+                                }
+                            }
+                            ui.separator();
+                            if ui.button("Clear Recent Projects").clicked() {
+                                self.welcome_screen.recent_projects.clear();
+                                self.welcome_screen.save_recent_projects();
+                                ui.close_menu();
+                            }
+                        });
+                    }
+
                     ui.separator();
                     if ui.button("Save").clicked() {
                         self.save_project();
@@ -164,6 +322,12 @@ impl ImmortalApp {
                     ui.separator();
                     if ui.button("Export...").clicked() {
                         // TODO: Export dialog
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Close Project").clicked() {
+                        // Return to welcome screen
+                        self.show_welcome_screen();
                         ui.close_menu();
                     }
                     ui.separator();
@@ -515,16 +679,123 @@ impl ImmortalApp {
             }
         });
 
-        // Configuration section
+        // Configuration section - editable
         if !node.config.is_empty() {
-            ui.collapsing("Configuration", |ui| {
-                for (key, value) in &node.config {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{}:", key));
-                        ui.label(format!("{:?}", value));
+            egui::CollapsingHeader::new("Configuration")
+                .default_open(true)
+                .show(ui, |ui| {
+                    let mut config_updates: Vec<(String, imortal_core::ConfigValue)> = Vec::new();
+
+                    // Sort config keys for consistent display, with important ones first
+                    let mut config_clone: Vec<(String, imortal_core::ConfigValue)> =
+                        node.config.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+
+                    // Custom sort: backend first, then connection settings, then others
+                    config_clone.sort_by(|(a, _), (b, _)| {
+                        let priority = |k: &str| -> i32 {
+                            match k {
+                                "backend" => 0,
+                                "host" => 1,
+                                "port" => 2,
+                                "database" => 3,
+                                "username" => 4,
+                                "password" => 5,
+                                "connection_string" => 6,
+                                _ => 100,
+                            }
+                        };
+                        priority(a).cmp(&priority(b))
                     });
-                }
-            });
+
+                    // Database backends for dropdown
+                    let db_backends = ["postgres", "mysql", "sqlite", "mssql", "mongodb"];
+
+                    // Cache backends for dropdown
+                    let cache_backends = ["memory", "redis", "memcached"];
+
+                    for (key, value) in config_clone {
+                        ui.horizontal(|ui| {
+                            // Format key name nicely
+                            let display_key = key.replace('_', " ");
+                            let display_key = display_key
+                                .split_whitespace()
+                                .map(|word| {
+                                    let mut chars = word.chars();
+                                    match chars.next() {
+                                        None => String::new(),
+                                        Some(c) => c.to_uppercase().chain(chars).collect(),
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" ");
+
+                            ui.label(format!("{}:", display_key));
+
+                            match value.clone() {
+                                imortal_core::ConfigValue::String(mut s) => {
+                                    // Special handling for 'backend' - show dropdown
+                                    if key == "backend" {
+                                        let backends = if node.component_type.contains("cache") {
+                                            &cache_backends[..]
+                                        } else {
+                                            &db_backends[..]
+                                        };
+
+                                        egui::ComboBox::from_id_salt(format!("config_{}", key))
+                                            .selected_text(&s)
+                                            .show_ui(ui, |ui| {
+                                                for backend in backends {
+                                                    if ui.selectable_value(&mut s, backend.to_string(), *backend).changed() {
+                                                        config_updates.push((key.clone(), imortal_core::ConfigValue::String(s.clone())));
+                                                    }
+                                                }
+                                            });
+                                    } else {
+                                        // Check if it's a sensitive field
+                                        let is_sensitive = key.contains("password") || key.contains("secret");
+
+                                        if is_sensitive {
+                                            if ui.add(egui::TextEdit::singleline(&mut s).password(true).desired_width(150.0)).changed() {
+                                                config_updates.push((key.clone(), imortal_core::ConfigValue::String(s)));
+                                            }
+                                        } else {
+                                            if ui.add(egui::TextEdit::singleline(&mut s).desired_width(150.0)).changed() {
+                                                config_updates.push((key.clone(), imortal_core::ConfigValue::String(s)));
+                                            }
+                                        }
+                                    }
+                                }
+                                imortal_core::ConfigValue::Int(mut i) => {
+                                    if ui.add(egui::DragValue::new(&mut i)).changed() {
+                                        config_updates.push((key.clone(), imortal_core::ConfigValue::Int(i)));
+                                    }
+                                }
+                                imortal_core::ConfigValue::Float(mut f) => {
+                                    if ui.add(egui::DragValue::new(&mut f).speed(0.1)).changed() {
+                                        config_updates.push((key.clone(), imortal_core::ConfigValue::Float(f)));
+                                    }
+                                }
+                                imortal_core::ConfigValue::Bool(mut b) => {
+                                    if ui.checkbox(&mut b, "").changed() {
+                                        config_updates.push((key.clone(), imortal_core::ConfigValue::Bool(b)));
+                                    }
+                                }
+                                _ => {
+                                    ui.label(format!("{:?}", value));
+                                }
+                            }
+                        });
+                    }
+
+                    // Apply config updates
+                    if !config_updates.is_empty() {
+                        if let Some(n) = self.project.get_node_mut(node_id) {
+                            for (key, value) in config_updates {
+                                n.config.insert(key, value);
+                            }
+                        }
+                    }
+                });
         }
     }
 
@@ -585,6 +856,16 @@ impl ImmortalApp {
         }
     }
 
+    /// Get the number of content items to display for a node (for height calculation)
+    fn get_node_content_items(node: &Node) -> usize {
+        match node.component_type.as_str() {
+            "data.entity" => node.fields.len(),
+            "storage.database" => 4,  // backend, host:port, database, ssl
+            "api.rest" => 3,          // method, path, auth
+            _ => 0,
+        }
+    }
+
     /// Render the main canvas
     fn render_canvas(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -635,12 +916,12 @@ impl ImmortalApp {
                     let node_width = node.size.width * zoom;
 
                     // Calculate actual node height (same logic as draw_node)
-                    let is_entity = node.component_type == "data.entity";
                     let header_height = 25.0 * zoom;
                     let field_height_val = 18.0 * zoom;
-                    let field_count = if is_entity { node.fields.len() } else { 0 };
-                    let node_height = if is_entity && field_count > 0 {
-                        header_height + (field_count as f32 * field_height_val) + (8.0 * zoom)
+                    let content_items = Self::get_node_content_items(node);
+
+                    let node_height = if content_items > 0 {
+                        header_height + (content_items as f32 * field_height_val) + (8.0 * zoom)
                     } else {
                         node.size.height * zoom
                     };
@@ -829,12 +1110,12 @@ impl ImmortalApp {
                 let node_width = node.size.width * zoom;
 
                 // Calculate actual node height (same logic as draw_node)
-                let is_entity = node.component_type == "data.entity";
                 let header_height = 25.0 * zoom;
                 let field_height = 18.0 * zoom;
-                let field_count = if is_entity { node.fields.len() } else { 0 };
-                let node_height = if is_entity && field_count > 0 {
-                    header_height + (field_count as f32 * field_height) + (8.0 * zoom)
+                let content_items = Self::get_node_content_items(node);
+
+                let node_height = if content_items > 0 {
+                    header_height + (content_items as f32 * field_height) + (8.0 * zoom)
                 } else {
                     node.size.height * zoom
                 };
@@ -947,13 +1228,13 @@ impl ImmortalApp {
         let zoom = self.project.viewport.zoom;
         let pan = egui::vec2(self.project.viewport.pan_x, self.project.viewport.pan_y);
 
-        // Calculate node height based on fields for entity nodes
-        let is_entity = node.component_type == "data.entity";
+        // Calculate node height based on content
         let header_height = 25.0 * zoom;
         let field_height = 18.0 * zoom;
-        let field_count = if is_entity { node.fields.len() } else { 0 };
-        let calculated_height = if is_entity && field_count > 0 {
-            header_height + (field_count as f32 * field_height) + (8.0 * zoom)
+        let content_items = Self::get_node_content_items(node);
+
+        let calculated_height = if content_items > 0 {
+            header_height + (content_items as f32 * field_height) + (8.0 * zoom)
         } else {
             node.size.height * zoom
         };
@@ -1012,6 +1293,10 @@ impl ImmortalApp {
         );
 
         // Draw fields for entity nodes
+        let is_entity = node.component_type == "data.entity";
+        let is_database = node.component_type == "storage.database";
+        let is_rest_endpoint = node.component_type == "api.rest";
+
         if is_entity && !node.fields.is_empty() {
             let field_start_y = header_rect.max.y + (4.0 * zoom);
             let text_color = egui::Color32::from_rgb(200, 200, 200);
@@ -1049,17 +1334,176 @@ impl ImmortalApp {
                 );
             }
         }
+
+        // Draw database connection details for storage.database nodes
+        if is_database {
+            let field_start_y = header_rect.max.y + (4.0 * zoom);
+            let label_color = egui::Color32::from_rgb(180, 180, 180);
+            let value_color = egui::Color32::from_rgb(220, 220, 220);
+            let highlight_color = egui::Color32::from_rgb(255, 200, 100);
+
+            // Get config values
+            let backend = node.config.get("backend")
+                .and_then(|v| if let imortal_core::ConfigValue::String(s) = v { Some(s.as_str()) } else { None })
+                .unwrap_or("postgres");
+            let host = node.config.get("host")
+                .and_then(|v| if let imortal_core::ConfigValue::String(s) = v { Some(s.as_str()) } else { None })
+                .unwrap_or("localhost");
+            let port = node.config.get("port")
+                .and_then(|v| if let imortal_core::ConfigValue::Int(i) = v { Some(*i) } else { None })
+                .unwrap_or(5432);
+            let database = node.config.get("database")
+                .and_then(|v| if let imortal_core::ConfigValue::String(s) = v { Some(s.clone()) } else { None })
+                .unwrap_or_else(|| "—".to_string());
+            let ssl = node.config.get("ssl")
+                .and_then(|v| if let imortal_core::ConfigValue::Bool(b) = v { Some(*b) } else { None })
+                .unwrap_or(true);
+
+            // Backend icon based on type
+            let backend_icon = match backend {
+                "postgres" => "🐘",
+                "mysql" => "🐬",
+                "sqlite" => "📁",
+                "mongodb" => "🍃",
+                "mssql" => "🪟",
+                _ => "💾",
+            };
+
+            // Row 1: Backend type
+            let row_y = field_start_y;
+            painter.text(
+                egui::pos2(node_rect.min.x + (8.0 * zoom), row_y),
+                egui::Align2::LEFT_TOP,
+                format!("{} {}", backend_icon, backend.to_uppercase()),
+                egui::FontId::proportional(12.0 * zoom),
+                highlight_color
+            );
+
+            // Row 2: Host and port
+            let row_y = field_start_y + field_height;
+            painter.text(
+                egui::pos2(node_rect.min.x + (8.0 * zoom), row_y),
+                egui::Align2::LEFT_TOP,
+                "Host:",
+                egui::FontId::proportional(11.0 * zoom),
+                label_color
+            );
+            painter.text(
+                egui::pos2(node_rect.max.x - (8.0 * zoom), row_y),
+                egui::Align2::RIGHT_TOP,
+                format!("{}:{}", host, port),
+                egui::FontId::proportional(11.0 * zoom),
+                value_color
+            );
+
+            // Row 3: Database name
+            let row_y = field_start_y + (field_height * 2.0);
+            painter.text(
+                egui::pos2(node_rect.min.x + (8.0 * zoom), row_y),
+                egui::Align2::LEFT_TOP,
+                "Database:",
+                egui::FontId::proportional(11.0 * zoom),
+                label_color
+            );
+            painter.text(
+                egui::pos2(node_rect.max.x - (8.0 * zoom), row_y),
+                egui::Align2::RIGHT_TOP,
+                &database,
+                egui::FontId::proportional(11.0 * zoom),
+                value_color
+            );
+
+            // Row 4: SSL status
+            let row_y = field_start_y + (field_height * 3.0);
+            let ssl_icon = if ssl { "🔒" } else { "🔓" };
+            let ssl_text = if ssl { "SSL Enabled" } else { "SSL Disabled" };
+            let ssl_color = if ssl { egui::Color32::from_rgb(100, 200, 100) } else { egui::Color32::from_rgb(200, 150, 100) };
+            painter.text(
+                egui::pos2(node_rect.min.x + (8.0 * zoom), row_y),
+                egui::Align2::LEFT_TOP,
+                format!("{} {}", ssl_icon, ssl_text),
+                egui::FontId::proportional(11.0 * zoom),
+                ssl_color
+            );
+        }
+
+        // Draw REST endpoint details for api.rest nodes
+        if is_rest_endpoint {
+            let field_start_y = header_rect.max.y + (4.0 * zoom);
+            let label_color = egui::Color32::from_rgb(180, 180, 180);
+            let value_color = egui::Color32::from_rgb(220, 220, 220);
+
+            // Get config values
+            let method = node.config.get("method")
+                .and_then(|v| if let imortal_core::ConfigValue::String(s) = v { Some(s.as_str()) } else { None })
+                .unwrap_or("GET");
+            let path = node.config.get("path")
+                .and_then(|v| if let imortal_core::ConfigValue::String(s) = v { Some(s.clone()) } else { None })
+                .unwrap_or_else(|| "/api".to_string());
+            let auth_required = node.config.get("auth_required")
+                .and_then(|v| if let imortal_core::ConfigValue::Bool(b) = v { Some(*b) } else { None })
+                .unwrap_or(false);
+
+            // Method color based on HTTP method
+            let method_color = match method {
+                "GET" => egui::Color32::from_rgb(100, 200, 100),
+                "POST" => egui::Color32::from_rgb(100, 150, 255),
+                "PUT" => egui::Color32::from_rgb(255, 200, 100),
+                "DELETE" => egui::Color32::from_rgb(255, 100, 100),
+                "PATCH" => egui::Color32::from_rgb(200, 150, 255),
+                _ => egui::Color32::from_rgb(180, 180, 180),
+            };
+
+            // Row 1: HTTP Method
+            let row_y = field_start_y;
+            painter.text(
+                egui::pos2(node_rect.min.x + (8.0 * zoom), row_y),
+                egui::Align2::LEFT_TOP,
+                method,
+                egui::FontId::proportional(12.0 * zoom),
+                method_color
+            );
+
+            // Row 2: Path
+            let row_y = field_start_y + field_height;
+            painter.text(
+                egui::pos2(node_rect.min.x + (8.0 * zoom), row_y),
+                egui::Align2::LEFT_TOP,
+                "Path:",
+                egui::FontId::proportional(11.0 * zoom),
+                label_color
+            );
+            painter.text(
+                egui::pos2(node_rect.max.x - (8.0 * zoom), row_y),
+                egui::Align2::RIGHT_TOP,
+                &path,
+                egui::FontId::proportional(11.0 * zoom),
+                value_color
+            );
+
+            // Row 3: Auth status
+            let row_y = field_start_y + (field_height * 2.0);
+            let auth_icon = if auth_required { "🔐" } else { "🔓" };
+            let auth_text = if auth_required { "Auth Required" } else { "Public" };
+            let auth_color = if auth_required { egui::Color32::from_rgb(255, 200, 100) } else { egui::Color32::from_rgb(150, 150, 150) };
+            painter.text(
+                egui::pos2(node_rect.min.x + (8.0 * zoom), row_y),
+                egui::Align2::LEFT_TOP,
+                format!("{} {}", auth_icon, auth_text),
+                egui::FontId::proportional(11.0 * zoom),
+                auth_color
+            );
+        }
     }
 
-    /// Calculate the actual rendered height of a node (accounting for entity fields)
+    /// Calculate the actual rendered height of a node (accounting for content)
     fn calculate_node_height(&self, node: &Node, zoom: f32) -> f32 {
-        let is_entity = node.component_type == "data.entity";
         let header_height = 25.0 * zoom;
         let field_height = 18.0 * zoom;
-        let field_count = if is_entity { node.fields.len() } else { 0 };
+        let content_items = Self::get_node_content_items(node);
 
-        if is_entity && field_count > 0 {
-            header_height + (field_count as f32 * field_height) + (8.0 * zoom)
+        if content_items > 0 {
+            header_height + (content_items as f32 * field_height) + (8.0 * zoom)
         } else {
             node.size.height * zoom
         }
@@ -1243,13 +1687,17 @@ impl ImmortalApp {
 
     // File operations
     fn open_project(&mut self) {
-        // TODO: Implement file dialog
-        self.set_status("Open project dialog not yet implemented");
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Immortal Project", &["imortal"])
+            .pick_file()
+        {
+            self.load_project_from_path(path);
+        }
     }
 
     fn save_project(&mut self) {
-        if let Some(path) = &self.project_path {
-            match imortal_ir::save_project(&self.project, path, imortal_ir::ProjectFormat::Json) {
+        if let Some(path) = &self.project_path.clone() {
+            match imortal_ir::save_project(&self.project, &path, imortal_ir::ProjectFormat::Json) {
                 Ok(_) => self.set_status("Project saved"),
                 Err(e) => self.set_status(format!("Failed to save: {}", e)),
             }
@@ -1259,8 +1707,21 @@ impl ImmortalApp {
     }
 
     fn save_project_as(&mut self) {
-        // TODO: Implement file dialog
-        self.set_status("Save as dialog not yet implemented");
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Immortal Project", &["imortal"])
+            .set_file_name(&format!("{}.imortal", self.project.meta.name))
+            .save_file()
+        {
+            self.project_path = Some(path.clone());
+
+            // Update recent projects
+            self.welcome_screen.add_recent_project(self.project.meta.name.clone(), path.clone());
+
+            match imortal_ir::save_project(&self.project, &path, imortal_ir::ProjectFormat::Json) {
+                Ok(_) => self.set_status("Project saved"),
+                Err(e) => self.set_status(format!("Failed to save: {}", e)),
+            }
+        }
     }
 
     fn generate_code(&mut self) {
@@ -1284,14 +1745,38 @@ impl eframe::App for ImmortalApp {
             ctx.set_visuals(egui::Visuals::light());
         }
 
-        // Render all UI components
-        self.render_menu_bar(ctx, frame);
-        self.render_status_bar(ctx);
-        self.render_palette(ctx);
-        self.render_properties(ctx);
-        self.render_canvas(ctx);
-        self.render_dialogs(ctx);
+        match self.mode {
+            AppMode::Welcome => {
+                // Show welcome screen
+                let action = self.welcome_screen.show(ctx);
+                self.handle_welcome_action(action);
+            }
+            AppMode::Editor => {
+                // Render all editor UI components
+                self.render_menu_bar(ctx, frame);
+                self.render_status_bar(ctx);
+                self.render_palette(ctx);
+                self.render_properties(ctx);
+                self.render_canvas(ctx);
+                self.render_dialogs(ctx);
+            }
+        }
     }
+}
+
+/// Sanitize a project name for use as a directory/file name
+fn sanitize_project_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else if c == ' ' {
+                '_'
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// Calculate points along a cubic bezier curve
